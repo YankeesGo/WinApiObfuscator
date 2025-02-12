@@ -1,27 +1,44 @@
 #pragma once
-#include <functional>
 #include <Windows.h>
 #include <string_view>
 
+/**
+ * @namespace win_api
+ * @brief Namespace containing Windows API import functionality
+ */
 namespace win_api {
 
+/// @brief Type alias for LoadLibrary function pointer
 using t_load_library = HMODULE(WINAPI *)(__in LPCSTR file_name);
 
+/**
+ * @struct unicode_string
+ * @brief Structure representing a Unicode string in Windows
+ */
 struct unicode_string {
-    USHORT length;
-    USHORT maximum_length;
-    PWSTR buffer;
+    USHORT length; ///< Length of the string
+    USHORT maximum_length; ///< Maximum length of the buffer
+    PWSTR buffer; ///< Pointer to the string buffer
 };
 
+/**
+ * @struct ldr_module
+ * @brief Structure representing a loaded module in Windows
+ */
 struct ldr_module {
-    LIST_ENTRY e[3];
-    HMODULE base;
-    void *entry;
-    UINT size;
-    unicode_string dll_path;
-    unicode_string dll_name;
+    LIST_ENTRY e[3]; ///< Module links
+    HMODULE base; ///< Base address of the module
+    void* entry; ///< Entry point
+    UINT size; ///< Size of the module
+    unicode_string dll_path; ///< Full path to the DLL
+    unicode_string dll_name; ///< Name of the DLL
 };
 
+/**
+ * @brief Macro for MurmurHash2A mixing function
+ * @param h Hash accumulator
+ * @param k Current value to mix
+ */
 #define mmix(h, k)                                                                                                             \
     {                                                                                                                          \
         k *= m;                                                                                                                \
@@ -31,17 +48,25 @@ struct ldr_module {
         h ^= k;                                                                                                                \
     }
 
+/**
+ * @namespace detail
+ * @brief Implementation details namespace
+ */
 namespace detail {
-[[nodiscard]] unsigned int murmur_hash2_a(const void *key, int len, unsigned int seed)
+
+/**
+ * @brief Implements MurmurHash2A algorithm
+ */
+[[nodiscard]] unsigned int murmur_hash2_a(const void* key, int len, unsigned int seed)
 {
     constexpr unsigned int m = 0x5bd1e995;
     constexpr auto r = 24;
-    const unsigned char *current_data = static_cast<const unsigned char *>(key);
+    auto current_data = static_cast<const unsigned char*>(key);
     auto h = seed;
     auto remaining_len = len;
 
     while (remaining_len >= 4) {
-        auto k = *reinterpret_cast<const unsigned int *>(current_data);
+        auto k = *reinterpret_cast<const unsigned int*>(current_data);
         k *= m;
         k ^= k >> r;
         k *= m;
@@ -73,6 +98,9 @@ namespace detail {
     return result;
 }
 
+/**
+ * @brief Parses the export table of a module to find a function
+ */
 [[nodiscard]] LPVOID parse_export_table(HMODULE module, DWORD api_hash, int len, unsigned seed)
 {
     if (!module)
@@ -82,8 +110,8 @@ namespace detail {
     const auto img_nt_header =
             reinterpret_cast<PIMAGE_NT_HEADERS>(reinterpret_cast<DWORD_PTR>(img_dos_header) + img_dos_header->e_lfanew);
     const auto in_export = reinterpret_cast<PIMAGE_EXPORT_DIRECTORY>(
-            reinterpret_cast<DWORD_PTR>(img_dos_header)
-            + img_nt_header->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
+        reinterpret_cast<DWORD_PTR>(img_dos_header)
+        + img_nt_header->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress);
 
     const auto rva_name = reinterpret_cast<PDWORD>(reinterpret_cast<DWORD_PTR>(img_dos_header) + in_export->AddressOfNames);
     const auto rva_ordinal =
@@ -107,24 +135,38 @@ namespace detail {
 }
 } // namespace detail
 
+/**
+ * @class win_api_import
+ * @brief Class for importing Windows API functions dynamically
+ */
 template<typename T>
 class win_api_import {
 public:
+    /**
+     * @class function_holder
+     * @brief RAII wrapper for imported function and its module
+     */
     struct function_holder final {
-        HMODULE dll_handle;
-        T *func_ptr;
+        HMODULE dll_handle; ///< Handle to the loaded DLL
+        T* func_ptr; ///< Pointer to the imported function
 
-        function_holder() : dll_handle(nullptr), func_ptr(nullptr) {}
+        function_holder()
+            : dll_handle(nullptr)
+            , func_ptr(nullptr) {}
 
-        function_holder(HMODULE dll, T *func) : dll_handle(dll), func_ptr(func) {}
+        function_holder(HMODULE dll, T* func)
+            : dll_handle(dll)
+            , func_ptr(func) {}
 
-        function_holder(function_holder &&other) noexcept : dll_handle(other.dll_handle), func_ptr(other.func_ptr)
+        function_holder(function_holder&& other) noexcept
+            : dll_handle(other.dll_handle)
+            , func_ptr(other.func_ptr)
         {
             other.dll_handle = nullptr;
             other.func_ptr = nullptr;
         }
 
-        function_holder &operator=(function_holder &&other) noexcept
+        function_holder& operator=(function_holder&& other) noexcept
         {
             if (this != &other) {
                 cleanup();
@@ -139,7 +181,7 @@ public:
         ~function_holder() { cleanup(); }
 
         template<typename... Args>
-        auto operator()(Args &&...args) const
+        auto operator()(Args&&... args) const
         {
             return func_ptr(std::forward<Args>(args)...);
         }
@@ -156,17 +198,15 @@ public:
             }
         }
 
-        function_holder(const function_holder &) = delete;
-        function_holder &operator=(const function_holder &) = delete;
+        function_holder(const function_holder&) = delete;
+        function_holder& operator=(const function_holder&) = delete;
     };
 
     win_api_import(std::string_view func_name, std::string_view module_name, unsigned seed = 0)
         : m_func_name(func_name)
         , m_module_name(module_name)
         , m_len(static_cast<int>(func_name.length()))
-        , m_seed(seed == 0 ? m_len : seed)
-    {
-    }
+        , m_seed(seed == 0 ? m_len : seed) {}
 
     [[nodiscard]] function_holder get_function()
     {
@@ -174,21 +214,21 @@ public:
             const auto [krnl32, hdll] = get_modules();
             const auto api_hash = detail::murmur_hash2_a(m_func_name.data(), m_len, m_seed);
             auto api_func = detail::parse_export_table(hdll, api_hash, m_len, m_seed);
-            return function_holder(hdll, reinterpret_cast<T *>(api_func));
+            return function_holder(hdll, reinterpret_cast<T*>(api_func));
         } catch (...) {
             return function_holder();
         }
     }
 
 private:
-    const std::string_view m_func_name;
-    const std::string_view m_module_name;
-    const int m_len;
-    const unsigned m_seed;
+    const std::string_view m_func_name; ///< Name of the function to import
+    const std::string_view m_module_name; ///< Name of the module
+    const int m_len; ///< Length of the function name
+    const unsigned m_seed; ///< Seed for hash function
 
     struct module_pair {
-        HMODULE kernel32;
-        HMODULE dll;
+        HMODULE kernel32; ///< Handle to kernel32.dll
+        HMODULE dll; ///< Handle to target module
     };
 
     [[nodiscard]] module_pair get_modules() const
@@ -204,13 +244,13 @@ private:
         constexpr auto kernel_base_addr = 0x10;
         const auto peb = __readfsdword(0x30);
 #endif
-        const auto mdllist = *reinterpret_cast<INT_PTR *>(peb + module_list);
-        const auto mlink = *reinterpret_cast<INT_PTR *>(mdllist + module_list_flink);
-        auto mdl = reinterpret_cast<ldr_module *>(mlink);
+        const auto mdllist = *reinterpret_cast<INT_PTR*>(peb + module_list);
+        const auto mlink = *reinterpret_cast<INT_PTR*>(mdllist + module_list_flink);
+        auto mdl = reinterpret_cast<ldr_module*>(mlink);
         HMODULE krnl32 = nullptr;
 
         do {
-            mdl = reinterpret_cast<ldr_module *>(mdl->e[0].Flink);
+            mdl = reinterpret_cast<ldr_module*>(mdl->e[0].Flink);
             if (mdl->base && !lstrcmpiW(mdl->dll_name.buffer, L"kernel32.dll")) {
                 krnl32 = mdl->base;
                 break;
@@ -225,6 +265,9 @@ private:
     }
 };
 
+/**
+ * @brief Helper function to import an API function
+ */
 template<typename T>
 [[nodiscard]] typename win_api_import<T>::function_holder get(std::string_view func_name, std::string_view module_name,
                                                               unsigned seed = 0)
